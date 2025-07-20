@@ -314,7 +314,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 
     iocb->ki_pos = pos;                                      // 更新偏移值
     return copied;
-
+}
 
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
