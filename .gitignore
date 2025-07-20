@@ -1,0 +1,13 @@
+/linux-6.5.7
+/.idea
+/share/lab3
+/share/lab5
+/share/lab7
+/share/lab7-patch
+/share/lab6
+/share/lab8
+/myHome5G.img
+/qemu-run.sh
+/qemu-run-externKernel.sh
+/*.Identifier
+/share/lkp/
