@@ -231,7 +231,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 #include <linux/buffer_head.h>
 #include <linux/uio.h>
 
-ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to, int flags)
+ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
 {
     struct file *filp = iocb->ki_filp;                        // 获取文件指针
     struct inode *inode = file_inode(filp);                   // 获取 inode
@@ -272,7 +272,7 @@ ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to, int flags)
 }
 
 
-ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from, int flags)
+ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 {
     struct file *filp = iocb->ki_filp;                        // 获取文件指针
     struct inode *inode = file_inode(filp);                   // 获取 inode
