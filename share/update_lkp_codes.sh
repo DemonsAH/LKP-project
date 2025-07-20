@@ -6,7 +6,7 @@ DST=~/linux/lkp/
 LKPDIR=~/linux
 
 # 拷贝文件
-cp -r ~/share/project/* ~/linux/ouichefs/
+cp -r project/* ~/linux/ouichefs/
 
 # 进入内核源目录
 #cd "$LKPDIR" || exit 1
