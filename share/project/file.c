@@ -233,86 +233,85 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 
 ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
 {
-    struct file *filp = iocb->ki_filp;                        // 获取文件指针
-    struct inode *inode = file_inode(filp);                   // 获取 inode
-    struct super_block *sb = inode->i_sb;                     // 获取超级块
-    loff_t pos = iocb->ki_pos;                                // 当前文件偏移
-    size_t count = iov_iter_count(to);                        // 用户希望读取的字节数
-    size_t copied = 0;                                        // 实际拷贝的字节数
+    struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
+    struct inode *inode = file_inode(filp);                   // Get the inode
+    struct super_block *sb = inode->i_sb;                     // Get the superblock
+    loff_t pos = iocb->ki_pos;                                // Current file offset
+    size_t count = iov_iter_count(to);                        // Number of bytes requested by userspace
+    size_t copied = 0;                                        // Total number of bytes copied so far
 
-    if (pos >= inode->i_size)                                 // 如果请求位置在文件尾后
-        return 0;                                             // 表示 EOF，直接返回
+    if (pos >= inode->i_size)                                 // If requested offset is beyond EOF
+        return 0;                                             // Signal EOF to the application
 
-    while (count > 0 && pos < inode->i_size) {                // 只要还有数据要读并未到 EOF
-        unsigned int block_size = 4096;                       // 假设块大小为 4096 字节
-        unsigned int block_index = pos / block_size;         // 当前逻辑块编号
-        unsigned int offset = pos % block_size;              // 当前块内的偏移量
-        size_t bytes_left_in_block = block_size - offset;    // 当前块中还可读多少字节
-        size_t bytes_left_in_file = inode->i_size - pos;     // 文件中还剩多少字节可读
-        size_t to_copy = min3(count, bytes_left_in_block, bytes_left_in_file);  // 决定本轮拷贝多少
+    while (count > 0 && pos < inode->i_size) {                // Continue while data remains and not at EOF
+        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
+        unsigned int block_index = pos / block_size;         // Compute logical block index
+        unsigned int offset = pos % block_size;              // Offset within the current block
+        size_t bytes_left_in_block = block_size - offset;    // Bytes remaining in the current block
+        size_t bytes_left_in_file = inode->i_size - pos;     // Bytes left until EOF
+        size_t to_copy = min3(count, bytes_left_in_block, bytes_left_in_file);  // How much to copy this iteration
 
-        sector_t disk_block = inode->i_blocks + block_index; // 简化映射：inode->i_blocks 是起始块
-        struct buffer_head *bh = sb_bread(sb, disk_block);   // 从磁盘读取该块
+        sector_t disk_block = inode->i_blocks + block_index; // Simplified: start from inode->i_blocks
+        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read the block from disk
         if (!bh)
-            return copied ? copied : -EIO;                   // 如果读失败，返回已读或错误
+            return copied ? copied : -EIO;                   // On failure, return partial result or error
 
         if (copy_to_iter(bh->b_data + offset, to_copy, to) != to_copy) {
-            brelse(bh);                                      // 用户空间拷贝失败，释放 buffer
+            brelse(bh);                                      // If copying to userspace fails, release buffer
             return copied ? copied : -EFAULT;
         }
 
-        brelse(bh);                                          // 成功读完该块，释放 buffer
-        pos += to_copy;                                      // 更新文件偏移
-        copied += to_copy;                                   // 累加已读取字节
-        count -= to_copy;                                    // 剩余请求减去本轮已完成部分
+        brelse(bh);                                          // Done with buffer, release it
+        pos += to_copy;                                      // Advance file position
+        copied += to_copy;                                   // Track bytes read
+        count -= to_copy;                                    // Reduce remaining bytes to read
     }
 
-    iocb->ki_pos = pos;                                      // 写回更新后的偏移量
-    return copied;                                           // 返回总共读取的字节数
+    iocb->ki_pos = pos;                                      // Update file offset for caller
+    return copied;                                           // Return total bytes copied
 }
-
 
 ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 {
-    struct file *filp = iocb->ki_filp;                        // 获取文件指针
-    struct inode *inode = file_inode(filp);                   // 获取 inode
-    struct super_block *sb = inode->i_sb;                     // 获取超级块
-    loff_t pos = iocb->ki_pos;                                // 当前文件偏移
-    size_t count = iov_iter_count(from);                      // 用户希望写入的字节数
-    size_t copied = 0;                                        // 实际写入的字节数
+    struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
+    struct inode *inode = file_inode(filp);                   // Get the inode
+    struct super_block *sb = inode->i_sb;                     // Get the superblock
+    loff_t pos = iocb->ki_pos;                                // Current file offset
+    size_t count = iov_iter_count(from);                      // Number of bytes to write from userspace
+    size_t copied = 0;                                        // Total bytes written so far
 
-    while (count > 0) {                                       // 直到写完所有数据
-        unsigned int block_size = 4096;                       // 假设块大小为 4096
-        unsigned int block_index = pos / block_size;         // 当前逻辑块编号
-        unsigned int offset = pos % block_size;              // 当前块内的写偏移
-        size_t bytes_left_in_block = block_size - offset;    // 当前块中剩余空间
-        size_t to_copy = min(count, bytes_left_in_block);    // 本次最多写入多少字节
+    while (count > 0) {                                       // Continue until all bytes are written
+        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
+        unsigned int block_index = pos / block_size;         // Compute logical block index
+        unsigned int offset = pos % block_size;              // Offset within the current block
+        size_t bytes_left_in_block = block_size - offset;    // Remaining space in current block
+        size_t to_copy = min(count, bytes_left_in_block);    // How much to write in this iteration
 
-        sector_t disk_block = inode->i_blocks + block_index; // 简化：从 i_blocks 起偏移
-        struct buffer_head *bh = sb_bread(sb, disk_block);   // 读取磁盘块（为了写入）
+        sector_t disk_block = inode->i_blocks + block_index; // Simplified: block number from i_blocks + index
+        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read block from disk (for writing)
         if (!bh)
-            return copied ? copied : -EIO;                   // 错误处理
+            return copied ? copied : -EIO;                   // On failure, return partial or error
 
         if (copy_from_iter(bh->b_data + offset, to_copy, from) != to_copy) {
-            brelse(bh);                                      // 拷贝失败，释放 buffer
+            brelse(bh);                                      // Release buffer on failure
             return copied ? copied : -EFAULT;
         }
 
-        mark_buffer_dirty(bh);                               // 标记为脏页（已修改）
-        sync_dirty_buffer(bh);                               // 立即写入磁盘
-        brelse(bh);                                          // 释放 buffer
+        mark_buffer_dirty(bh);                               // Mark buffer as dirty (modified)
+        sync_dirty_buffer(bh);                               // Immediately flush buffer to disk
+        brelse(bh);                                          // Release the buffer
 
-        pos += to_copy;                                      // 更新偏移
-        copied += to_copy;                                   // 累加写入字节
-        count -= to_copy;                                    // 更新剩余请求
+        pos += to_copy;                                      // Advance file offset
+        copied += to_copy;                                   // Track total written bytes
+        count -= to_copy;                                    // Decrease remaining bytes to write
     }
 
-    if (pos > inode->i_size) {                               // 如果写入扩展了文件
-        inode->i_size = pos;                                 // 更新文件大小
-        mark_inode_dirty(inode);                             // 通知 VFS inode 需要写回
+    if (pos > inode->i_size) {                               // If the file size increased
+        inode->i_size = pos;                                 // Update inode size
+        mark_inode_dirty(inode);                             // Notify VFS that inode needs to be flushed
     }
 
-    iocb->ki_pos = pos;                                      // 更新偏移值
+    iocb->ki_pos = pos;                                      // Update offset for caller
     return copied;
 }
 
