@@ -36,6 +36,34 @@
  *
  */
 
+// Number of bits used to store the slice number (we have at most 32 slices)
+#define SLICE_BITS      5
+
+// Mask to isolate the 5 bits used for the slice number (0b11111 = 0x1F)
+#define SLICE_MASK      0x1F
+
+// Mask to isolate the lower 27 bits for the block number (0x07FFFFFF)
+#define BLOCK_MASK      0x07FFFFFF
+
+// Pack a block number (lower 27 bits) and slice number (upper 5 bits) into a 32-bit value
+static inline uint32_t pack_slice_ptr(uint32_t block_num, uint8_t slice_num)
+{
+    // Mask the slice number to 5 bits, shift it to bits 31–27, then OR with masked block number
+    return ((slice_num & SLICE_MASK) << 27) | (block_num & BLOCK_MASK);
+}
+
+// Extract the block number (lower 27 bits) from a packed slice_ptr
+static inline uint32_t extract_block_num(uint32_t packed_val)
+{
+    return packed_val & BLOCK_MASK;
+}
+
+// Extract the slice number (upper 5 bits) from a packed slice_ptr
+static inline uint8_t extract_slice_num(uint32_t packed_val)
+{
+    return (packed_val >> 27) & SLICE_MASK;
+}
+
 struct ouichefs_inode {
 	__le32 i_mode; /* File mode */
 	__le32 i_uid; /* Owner id */
@@ -61,7 +89,7 @@ struct ouichefs_sliced_block_meta {
 
 
 struct ouichefs_inode_info {
-	uint32_t index_block;
+	uint32_t index_block; /* LKP impl: now for packed slice */
 	struct inode vfs_inode;
 };
 
