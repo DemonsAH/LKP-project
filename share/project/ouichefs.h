@@ -8,6 +8,7 @@
 #define _OUICHEFS_H
 
 #include <linux/fs.h>
+#include <linux/kobject.h>
 
 #define OUICHEFS_MAGIC 0x48434957
 
@@ -112,6 +113,17 @@ struct ouichefs_sb_info {
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 	uint32_t s_free_sliced_blocks; /* LKP impl */
+
+	//add new variables for task 1.4
+	uint32_t sliced_blocks;
+	uint32_t total_free_slices;
+	uint32_t files;
+	uint32_t small_files;
+	uint64_t total_data_size;
+	uint64_t total_used_size;
+
+	//add kobject for using sysfs
+	struct kobject sysfs_kobj;
 };
 
 struct ouichefs_file_index_block {
