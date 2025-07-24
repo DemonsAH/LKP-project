@@ -390,7 +390,7 @@ static struct kobj_type ouichefs_kobj_type = {
     .sysfs_ops = &kobj_sysfs_ops,
 };
 
-// 1. 定义所有属性
+// step 1. define all attrs
 DEFINE_OUICHEFS_ATTR_U32(free_blocks, nr_free_blocks);
 DEFINE_OUICHEFS_ATTR_U32(sliced_blocks, sliced_blocks);
 DEFINE_OUICHEFS_ATTR_U32(total_free_slices, total_free_slices);
@@ -410,7 +410,7 @@ static ssize_t efficiency_show(struct kobject *kobj,
 }
 static struct kobj_attribute efficiency_attr = __ATTR_RO(efficiency);
 
-// used_blocks 由 nr_blocks - nr_free_blocks 得到
+// used_blocks = nr_blocks - nr_free_blocks
 static ssize_t used_blocks_show(struct kobject *kobj,
                                 struct kobj_attribute *attr, char *buf)
 {
@@ -419,7 +419,7 @@ static ssize_t used_blocks_show(struct kobject *kobj,
 }
 static struct kobj_attribute used_blocks_attr = __ATTR_RO(used_blocks);
 
-// 2. 属性列表
+// step 2. use attrs to build list
 static struct attribute *ouichefs_attrs[] = {
     &free_blocks_attr.attr,
     &used_blocks_attr.attr,
@@ -436,19 +436,19 @@ static struct attribute_group ouichefs_attr_group = {
     .attrs = ouichefs_attrs,
 };
 
-// 3. 初始化函数（在 fill_super 中调用）
+// step 3. initialization(will be called in fill_super)
 static int ouichefs_sysfs_init(struct super_block *sb)
 {
     struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
     const char *devname = sb->s_id;
     struct kobject *ouichefs_root_kobj;
 
-    // 创建 /sys/fs/ouichefs 目录
+    // make dir /sys/fs/ouichefs
     ouichefs_root_kobj = kobject_create_and_add("ouichefs", fs_kobj);
     if (!ouichefs_root_kobj)
         return -ENOMEM;
 
-    // 初始化当前 partition 的 kobject（例如 loop0）
+    // init kobject for current partition(e.g. loop0)
     kobject_init(&sbi->sysfs_kobj, &ouichefs_kobj_type);
     if (kobject_add(&sbi->sysfs_kobj, ouichefs_root_kobj, "%s", devname))
         return -ENOMEM;
@@ -456,7 +456,7 @@ static int ouichefs_sysfs_init(struct super_block *sb)
     return sysfs_create_group(&sbi->sysfs_kobj, &ouichefs_attr_group);
 }
 
-// 4. 清理函数（在 put_super 中调用）
+// step 4. clean up(will be called in put_super)
 static void ouichefs_sysfs_cleanup(struct super_block *sb)
 {
     struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -464,4 +464,3 @@ static void ouichefs_sysfs_cleanup(struct super_block *sb)
     kobject_put(&sbi->sysfs_kobj);
 }
 
-// === SYSFS 导出逻辑结束 ===

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # 设置路径变量
 SRC=~/share/lab6/*
 DST=~/linux/lkp/
