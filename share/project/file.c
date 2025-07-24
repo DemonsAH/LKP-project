@@ -280,39 +280,149 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
     size_t count = iov_iter_count(from);                      // Number of bytes to write from userspace
     size_t copied = 0;                                        // Total bytes written so far
 
-    while (count > 0) {                                       // Continue until all bytes are written
-        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
-        unsigned int block_index = pos / block_size;         // Compute logical block index
-        unsigned int offset = pos % block_size;              // Offset within the current block
-        size_t bytes_left_in_block = block_size - offset;    // Remaining space in current block
-        size_t to_copy = min(count, bytes_left_in_block);    // How much to write in this iteration
+    // === 1.5 NEW CODE START: handle files <= 128 bytes with sliced blocks ===
+    if (count > 128) {
+        return -EFBIG; // Temporarily reject large files
+    }
 
-        sector_t disk_block = inode->i_blocks + block_index; // Simplified: block number from i_blocks + index
-        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read block from disk (for writing)
-        if (!bh)
-            return copied ? copied : -EIO;                   // On failure, return partial or error
+    // Allocate temporary kernel buffer
+    void *kbuf = kmalloc(count, GFP_KERNEL);
+    if (!kbuf)
+        return -ENOMEM;
 
-        if (copy_from_iter(bh->b_data + offset, to_copy, from) != to_copy) {
-            brelse(bh);                                      // Release buffer on failure
-            return copied ? copied : -EFAULT;
+    // Copy from userspace to kernel buffer
+    if (copy_from_iter(kbuf, count, from) != count) {
+        kfree(kbuf);
+        return -EFAULT;
+    }
+
+    // Handle sliced block allocation or reuse
+    uint32_t block_no, slice_no;
+    struct buffer_head *bh;
+    struct ouichefs_sb_info *sbi = sb->s_fs_info;
+
+    // If inode->index_block == 0, this file has not yet been assigned a slice
+    if (inode->ouichefs_inode.index_block == 0) {
+        // (1) Try to find a partially-filled block with a free slice
+        uint32_t curr = sbi->s_free_sliced_blocks;
+        int found = 0;
+        int i;
+
+        while (curr) {
+            bh = sb_bread(sb, curr);
+            if (!bh) break;
+
+            struct ouichefs_sliced_block *meta = (struct ouichefs_sliced_block *)bh->b_data;
+
+            for (i = 1; i < 32; i++) { // skip slice 0 (reserved for metadata)
+                if (meta->bitmap & (1 << i)) {
+                    // Found a free slice
+                    slice_no = i;
+                    block_no = curr;
+                    meta->bitmap &= ~(1 << i); // mark slice used
+                    found = 1;
+
+                    mark_buffer_dirty(bh);
+                    sync_dirty_buffer(bh);
+                    brelse(bh);
+                    break;
+                }
+            }
+
+            if (found) break;
+
+            curr = meta->next;
+            brelse(bh);
         }
 
-        mark_buffer_dirty(bh);                               // Mark buffer as dirty (modified)
-        sync_dirty_buffer(bh);                               // Immediately flush buffer to disk
-        brelse(bh);                                          // Release the buffer
+        // (2) If none found, allocate a new sliced block
+        if (!found) {
+            block_no = ouichefs_alloc_block(sb);
+            if (!block_no) {
+                kfree(kbuf);
+                return -ENOSPC;
+            }
 
-        pos += to_copy;                                      // Advance file offset
-        copied += to_copy;                                   // Track total written bytes
-        count -= to_copy;                                    // Decrease remaining bytes to write
+            bh = sb_bread(sb, block_no);
+            if (!bh) {
+                kfree(kbuf);
+                return -EIO;
+            }
+
+            struct ouichefs_sliced_block *meta = (struct ouichefs_sliced_block *)bh->b_data;
+            memset(meta, 0, sizeof(*meta));
+
+            slice_no = 1; // First usable slice
+            meta->bitmap = ~(1 << 1); // mark slice 1 as used
+            meta->next = sbi->s_free_sliced_blocks;
+            sbi->s_free_sliced_blocks = block_no;
+
+            mark_buffer_dirty(bh);
+            sync_dirty_buffer(bh);
+            brelse(bh);
+        }
+
+        // Store into inode: high 5 bits = slice_no, low 27 bits = block_no
+        inode->ouichefs_inode.index_block = (slice_no << 27) | block_no;
+    } else {
+        block_no = inode->ouichefs_inode.index_block & ((1 << 27) - 1);
+        slice_no = inode->ouichefs_inode.index_block >> 27;
     }
 
-    if (pos > inode->i_size) {                               // If the file size increased
-        inode->i_size = pos;                                 // Update inode size
-        mark_inode_dirty(inode);                             // Notify VFS that inode needs to be flushed
+    // Write data to the assigned slice
+    bh = sb_bread(sb, block_no);
+    if (!bh) {
+        kfree(kbuf);
+        return -EIO;
     }
 
-    iocb->ki_pos = pos;                                      // Update offset for caller
-    return copied;
+    memcpy(bh->b_data + (slice_no * 128), kbuf, count);
+    mark_buffer_dirty(bh);
+    sync_dirty_buffer(bh);
+    brelse(bh);
+
+    iocb->ki_pos += count;
+    inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
+    mark_inode_dirty(inode);
+
+    kfree(kbuf);
+    return count;
+    // === 1.5 NEW CODE END ===
+
+
+//    while (count > 0) {                                       // Continue until all bytes are written
+//        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
+//        unsigned int block_index = pos / block_size;         // Compute logical block index
+//        unsigned int offset = pos % block_size;              // Offset within the current block
+//        size_t bytes_left_in_block = block_size - offset;    // Remaining space in current block
+//        size_t to_copy = min(count, bytes_left_in_block);    // How much to write in this iteration
+//
+//        sector_t disk_block = inode->i_blocks + block_index; // Simplified: block number from i_blocks + index
+//        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read block from disk (for writing)
+//        if (!bh)
+//            return copied ? copied : -EIO;                   // On failure, return partial or error
+//
+//        if (copy_from_iter(bh->b_data + offset, to_copy, from) != to_copy) {
+//            brelse(bh);                                      // Release buffer on failure
+//            return copied ? copied : -EFAULT;
+//        }
+//
+//        mark_buffer_dirty(bh);                               // Mark buffer as dirty (modified)
+//        sync_dirty_buffer(bh);                               // Immediately flush buffer to disk
+//        brelse(bh);                                          // Release the buffer
+//
+//        pos += to_copy;                                      // Advance file offset
+//        copied += to_copy;                                   // Track total written bytes
+//        count -= to_copy;                                    // Decrease remaining bytes to write
+//    }
+//
+//    if (pos > inode->i_size) {                               // If the file size increased
+//        inode->i_size = pos;                                 // Update inode size
+//        mark_inode_dirty(inode);                             // Notify VFS that inode needs to be flushed
+//    }
+//
+//    iocb->ki_pos = pos;                                      // Update offset for caller
+//    return copied;
 }
 
 const struct file_operations ouichefs_file_ops = {
