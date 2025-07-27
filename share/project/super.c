@@ -362,6 +362,8 @@ free_sbi:
 
 // task1.4
 
+static struct kobject *ouichefs_root_kobj;
+
 #define DEFINE_OUICHEFS_ATTR_U32(name, field)                                   \
 static ssize_t name##_show(struct kobject *kobj,                                \
                            struct kobj_attribute *attr, char *buf)              \
@@ -390,7 +392,7 @@ static struct kobj_type ouichefs_kobj_type = {
     .sysfs_ops = &kobj_sysfs_ops,
 };
 
-// step 1. define all attrs
+// 1. 定义所有属性
 DEFINE_OUICHEFS_ATTR_U32(free_blocks, nr_free_blocks);
 DEFINE_OUICHEFS_ATTR_U32(sliced_blocks, sliced_blocks);
 DEFINE_OUICHEFS_ATTR_U32(total_free_slices, total_free_slices);
@@ -410,7 +412,7 @@ static ssize_t efficiency_show(struct kobject *kobj,
 }
 static struct kobj_attribute efficiency_attr = __ATTR_RO(efficiency);
 
-// used_blocks = nr_blocks - nr_free_blocks
+// used_blocks 由 nr_blocks - nr_free_blocks 得到
 static ssize_t used_blocks_show(struct kobject *kobj,
                                 struct kobj_attribute *attr, char *buf)
 {
@@ -419,7 +421,7 @@ static ssize_t used_blocks_show(struct kobject *kobj,
 }
 static struct kobj_attribute used_blocks_attr = __ATTR_RO(used_blocks);
 
-// step 2. use attrs to build list
+// 2. 属性列表
 static struct attribute *ouichefs_attrs[] = {
     &free_blocks_attr.attr,
     &used_blocks_attr.attr,
@@ -436,19 +438,20 @@ static struct attribute_group ouichefs_attr_group = {
     .attrs = ouichefs_attrs,
 };
 
-// step 3. initialization(will be called in fill_super)
+// 3. 初始化函数（在 fill_super 中调用）
 static int ouichefs_sysfs_init(struct super_block *sb)
 {
     struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
     const char *devname = sb->s_id;
-    struct kobject *ouichefs_root_kobj;
 
-    // make dir /sys/fs/ouichefs
-    ouichefs_root_kobj = kobject_create_and_add("ouichefs", fs_kobj);
-    if (!ouichefs_root_kobj)
-        return -ENOMEM;
+    // 如果还没有创建根节点，则创建 /sys/fs/ouichefs
+    if (!ouichefs_root_kobj) {
+        ouichefs_root_kobj = kobject_create_and_add("ouichefs", fs_kobj);
+        if (!ouichefs_root_kobj)
+            return -ENOMEM;
+    }
 
-    // init kobject for current partition(e.g. loop0)
+    // 创建 /sys/fs/ouichefs/<loopX>
     kobject_init(&sbi->sysfs_kobj, &ouichefs_kobj_type);
     if (kobject_add(&sbi->sysfs_kobj, ouichefs_root_kobj, "%s", devname))
         return -ENOMEM;
@@ -456,11 +459,20 @@ static int ouichefs_sysfs_init(struct super_block *sb)
     return sysfs_create_group(&sbi->sysfs_kobj, &ouichefs_attr_group);
 }
 
-// step 4. clean up(will be called in put_super)
+// 4. 清理函数（在 put_super 中调用）
 static void ouichefs_sysfs_cleanup(struct super_block *sb)
 {
     struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+
+    // 删除属性组 + 释放 /sys/fs/ouichefs/<loopX>
     sysfs_remove_group(&sbi->sysfs_kobj, &ouichefs_attr_group);
     kobject_put(&sbi->sysfs_kobj);
+
+    // 释放根目录 /sys/fs/ouichefs（只释放一次）
+    if (ouichefs_root_kobj) {
+        kobject_put(ouichefs_root_kobj);
+        ouichefs_root_kobj = NULL;
+    }
 }
 
+// === SYSFS 导出逻辑结束 ===
