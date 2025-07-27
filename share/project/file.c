@@ -198,7 +198,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool wronly = (file->f_flags & O_WRONLY) != 0;
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
-
+	inode->i_fop = &ouichefs_file_ops;
 	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
 		struct super_block *sb = inode->i_sb;
 		struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -478,6 +478,47 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 //    return copied;
 }
 
+#include <linux/uaccess.h>  // for access_ok, copy_from_user
+#include "ouichefs.h"
+
+long ouichefs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct inode *inode = file_inode(file);
+    struct super_block *sb = inode->i_sb;
+    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+    struct buffer_head *bh;
+    uint32_t block_no;
+    int i;
+
+    // Only handle our custom command
+    if (cmd != OUICHEFS_IOCTL_DUMP_BLOCK)
+        return -ENOTTY; // Inappropriate ioctl for device
+
+    // This file must be stored in a slice block
+    if (ci->index_block == 0)
+        return -EINVAL;
+
+    block_no = ci->index_block & ((1 << 27) - 1);
+
+    bh = sb_bread(sb, block_no);
+    if (!bh)
+        return -EIO;
+
+    printk(KERN_INFO "---- Dumping Block %u ----\n", block_no);
+
+    for (i = 0; i < 32; i++) {
+        char line[129]; // 128 + null-terminator
+        memcpy(line, bh->b_data + i * 128, 128);
+        line[128] = '\0';
+
+        // You may print hex if needed for binary files
+        printk(KERN_INFO "Slice %02d: %.128s\n", i, line);
+    }
+
+    brelse(bh);
+    return 0;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
@@ -485,6 +526,7 @@ const struct file_operations ouichefs_file_ops = {
 	.read_iter = ouichefs_read,
 	.write_iter = ouichefs_write,
 	.fsync = generic_file_fsync,
+	.unlocked_ioctl = ouichefs_ioctl,
 };
 
 uint32_t ouichefs_alloc_block(struct super_block *sb)
