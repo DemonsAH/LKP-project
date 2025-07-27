@@ -9,9 +9,14 @@
 
 #include <linux/fs.h>
 #include <linux/kobject.h>
+#include <linux/ioctl.h>
 
 #define OUICHEFS_MAGIC 0x48434957
-#define OUICHEFS_IOCTL_DUMP_BLOCK _IO(OUICHEFS_MAGIC, 0x01)
+
+//Implementation for task 1.6
+#define OUICHEFS_IOCTL_MAGIC 'O'
+#define OUICHEFS_IOCTL_DUMP_BLOCK _IO(OUICHEFS_IOCTL_MAGIC, 0x01)
+
 #define OUICHEFS_SB_BLOCK_NR 0
 
 #define OUICHEFS_BLOCK_SIZE (1 << 12) /* 4 KiB */
