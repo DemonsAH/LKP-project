@@ -198,7 +198,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool wronly = (file->f_flags & O_WRONLY) != 0;
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
-	inode->i_fop = &ouichefs_file_ops;
+	inode->i_fop = &ouichefs_file_ops; // 1.6 change fixing ioctl bug
 
 	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
 		struct super_block *sb = inode->i_sb;
