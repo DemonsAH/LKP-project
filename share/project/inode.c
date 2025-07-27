@@ -358,11 +358,6 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	ino = inode->i_ino;
 	bno = OUICHEFS_INODE(inode)->index_block;
 
-	// task 1.7 detect small file
-	if (inode->i_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
-        release_slice(inode);
-        goto clean_inode;
-    }
 	/* Read parent directory index */
 	bh = sb_bread(sb, OUICHEFS_INODE(dir)->index_block);
 	if (!bh)
@@ -385,6 +380,12 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	memset(&dir_block->files[nr_subs - 1], 0, sizeof(struct ouichefs_file));
 	mark_buffer_dirty(bh);
 	brelse(bh);
+
+	// task 1.7 detect small file
+    if (inode->i_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
+        release_slice(inode);
+        goto clean_inode;
+    }
 
 	/* Update inode stats */
 	dir->i_mtime = dir->i_ctime = current_time(dir);
