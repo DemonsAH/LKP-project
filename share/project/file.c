@@ -275,10 +275,11 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 {
     struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
     struct inode *inode = file_inode(filp);                   // Get the inode
+    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
     struct super_block *sb = inode->i_sb;                     // Get the superblock
-    loff_t pos = iocb->ki_pos;                                // Current file offset
+    //loff_t pos = iocb->ki_pos;                                // Current file offset
     size_t count = iov_iter_count(from);                      // Number of bytes to write from userspace
-    size_t copied = 0;                                        // Total bytes written so far
+    //size_t copied = 0;                                        // Total bytes written so far
 
     // === 1.5 NEW CODE START: handle files <= 128 bytes with sliced blocks ===
     if (count > 128) {
@@ -302,7 +303,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
     struct ouichefs_sb_info *sbi = sb->s_fs_info;
 
     // If inode->index_block == 0, this file has not yet been assigned a slice
-    if (inode->ouichefs_inode.index_block == 0) {
+    if (ci->index_block == 0) {
         // (1) Try to find a partially-filled block with a free slice
         uint32_t curr = sbi->s_free_sliced_blocks;
         int found = 0;
@@ -312,14 +313,16 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
             bh = sb_bread(sb, curr);
             if (!bh) break;
 
-            struct ouichefs_sliced_block *meta = (struct ouichefs_sliced_block *)bh->b_data;
+            struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
 
             for (i = 1; i < 32; i++) { // skip slice 0 (reserved for metadata)
-                if (meta->bitmap & (1 << i)) {
+                if (le32_to_cpu(meta->slice_bitmap) & (1 << i)) {
                     // Found a free slice
                     slice_no = i;
                     block_no = curr;
-                    meta->bitmap &= ~(1 << i); // mark slice used
+                    uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
+		    bitmap &= ~(1 << i);
+		    meta->slice_bitmap = cpu_to_le32(bitmap); // mark slice used
                     found = 1;
 
                     mark_buffer_dirty(bh);
@@ -331,7 +334,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 
             if (found) break;
 
-            curr = meta->next;
+            curr = le32_to_cpu(meta->next_partial_block);
             brelse(bh);
         }
 
@@ -349,12 +352,12 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
                 return -EIO;
             }
 
-            struct ouichefs_sliced_block *meta = (struct ouichefs_sliced_block *)bh->b_data;
+            struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
             memset(meta, 0, sizeof(*meta));
 
             slice_no = 1; // First usable slice
-            meta->bitmap = ~(1 << 1); // mark slice 1 as used
-            meta->next = sbi->s_free_sliced_blocks;
+            meta->slice_bitmap = cpu_to_le32(~(1 << 1)); // mark slice 1 as used
+            meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
             sbi->s_free_sliced_blocks = block_no;
 
             mark_buffer_dirty(bh);
@@ -363,10 +366,14 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
         }
 
         // Store into inode: high 5 bits = slice_no, low 27 bits = block_no
-        inode->ouichefs_inode.index_block = (slice_no << 27) | block_no;
+        ci->index_block = (slice_no << 27) | block_no;
+	inode->i_blocks = 1;
+	inode->i_size = count;
+	mark_inode_dirty(inode);
+
     } else {
-        block_no = inode->ouichefs_inode.index_block & ((1 << 27) - 1);
-        slice_no = inode->ouichefs_inode.index_block >> 27;
+        block_no = ci->index_block & ((1 << 27) - 1);
+        slice_no = ci->index_block >> 27;
     }
 
     // Write data to the assigned slice
@@ -375,6 +382,8 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
         kfree(kbuf);
         return -EIO;
     }
+
+    memset(bh->b_data + (slice_no * 128), 0, 128);	//clean the whole slice
 
     memcpy(bh->b_data + (slice_no * 128), kbuf, count);
     mark_buffer_dirty(bh);
@@ -433,3 +442,9 @@ const struct file_operations ouichefs_file_ops = {
 	.write_iter = ouichefs_write,
 	.fsync = generic_file_fsync,
 };
+
+uint32_t ouichefs_alloc_block(struct super_block *sb)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	return get_free_block(sbi);
+}

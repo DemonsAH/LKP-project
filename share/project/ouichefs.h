@@ -150,6 +150,8 @@ extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
 extern const struct address_space_operations ouichefs_aops;
 
+uint32_t ouichefs_alloc_block(struct super_block *sb); //new function added for task1.5
+
 /* Getters for superbock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
