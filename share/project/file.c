@@ -233,43 +233,87 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 
 ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
 {
-    struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
-    struct inode *inode = file_inode(filp);                   // Get the inode
-    struct super_block *sb = inode->i_sb;                     // Get the superblock
-    loff_t pos = iocb->ki_pos;                                // Current file offset
-    size_t count = iov_iter_count(to);                        // Number of bytes requested by userspace
-    size_t copied = 0;                                        // Total number of bytes copied so far
+    struct file *filp = iocb->ki_filp;
+    struct inode *inode = file_inode(filp);
+    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+    struct super_block *sb = inode->i_sb;
+    loff_t pos = iocb->ki_pos;
+    size_t count = iov_iter_count(to);
+    size_t copied = 0;
 
-    if (pos >= inode->i_size)                                 // If requested offset is beyond EOF
-        return 0;                                             // Signal EOF to the application
+    if (pos >= inode->i_size) return 0;
 
-    while (count > 0 && pos < inode->i_size) {                // Continue while data remains and not at EOF
-        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
-        unsigned int block_index = pos / block_size;         // Compute logical block index
-        unsigned int offset = pos % block_size;              // Offset within the current block
-        size_t bytes_left_in_block = block_size - offset;    // Bytes remaining in the current block
-        size_t bytes_left_in_file = inode->i_size - pos;     // Bytes left until EOF
-        size_t to_copy = min3(count, bytes_left_in_block, bytes_left_in_file);  // How much to copy this iteration
+    // 只支持小文件读取（slice 方式）
+    if (ci->index_block == 0)
+        return 0;
 
-        sector_t disk_block = inode->i_blocks + block_index; // Simplified: start from inode->i_blocks
-        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read the block from disk
-        if (!bh)
-            return copied ? copied : -EIO;                   // On failure, return partial result or error
+    // 解码 block_no 和 slice_no
+    uint32_t block_no = ci->index_block & ((1 << 27) - 1);
+    uint32_t slice_no = ci->index_block >> 27;
 
-        if (copy_to_iter(bh->b_data + offset, to_copy, to) != to_copy) {
-            brelse(bh);                                      // If copying to userspace fails, release buffer
-            return copied ? copied : -EFAULT;
-        }
+    struct buffer_head *bh = sb_bread(sb, block_no);
+    if (!bh)
+        return -EIO;
 
-        brelse(bh);                                          // Done with buffer, release it
-        pos += to_copy;                                      // Advance file position
-        copied += to_copy;                                   // Track bytes read
-        count -= to_copy;                                    // Reduce remaining bytes to read
+    // 剩余的字节数 = 文件剩余长度 和 count 中较小者
+    size_t remain = inode->i_size - pos;
+    size_t to_copy = min(count, remain);
+
+    // 从 slice 的位置读取数据（slice_no * 128 + pos 偏移）
+    void *src = bh->b_data + (slice_no * 128) + pos;
+
+    if (copy_to_iter(src, to_copy, to) != to_copy) {
+        brelse(bh);
+        return -EFAULT;
     }
 
-    iocb->ki_pos = pos;                                      // Update file offset for caller
-    return copied;                                           // Return total bytes copied
+    brelse(bh);
+    iocb->ki_pos += to_copy;
+	copied += to_copy;
+    return copied;
 }
+
+
+//ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
+//{
+
+//    struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
+//    struct inode *inode = file_inode(filp);                   // Get the inode
+//    struct super_block *sb = inode->i_sb;                     // Get the superblock
+//    loff_t pos = iocb->ki_pos;                                // Current file offset
+//    size_t count = iov_iter_count(to);                        // Number of bytes requested by userspace
+//    size_t copied = 0;                                        // Total number of bytes copied so far
+//
+//    if (pos >= inode->i_size)                                 // If requested offset is beyond EOF
+//        return 0;                                             // Signal EOF to the application
+//
+//    while (count > 0 && pos < inode->i_size) {                // Continue while data remains and not at EOF
+//        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
+//        unsigned int block_index = pos / block_size;         // Compute logical block index
+//        unsigned int offset = pos % block_size;              // Offset within the current block
+//        size_t bytes_left_in_block = block_size - offset;    // Bytes remaining in the current block
+//        size_t bytes_left_in_file = inode->i_size - pos;     // Bytes left until EOF
+//        size_t to_copy = min3(count, bytes_left_in_block, bytes_left_in_file);  // How much to copy this iteration
+//
+//        sector_t disk_block = inode->i_blocks + block_index; // Simplified: start from inode->i_blocks
+//        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read the block from disk
+//        if (!bh)
+//            return copied ? copied : -EIO;                   // On failure, return partial result or error
+//
+//        if (copy_to_iter(bh->b_data + offset, to_copy, to) != to_copy) {
+//            brelse(bh);                                      // If copying to userspace fails, release buffer
+//            return copied ? copied : -EFAULT;
+//        }
+//
+//        brelse(bh);                                          // Done with buffer, release it
+//        pos += to_copy;                                      // Advance file position
+//        copied += to_copy;                                   // Track bytes read
+//        count -= to_copy;                                    // Reduce remaining bytes to read
+//    }
+//
+//    iocb->ki_pos = pos;                                      // Update file offset for caller
+//    return copied;                                           // Return total bytes copied
+//}
 
 ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 {
