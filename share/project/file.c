@@ -198,7 +198,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	bool wronly = (file->f_flags & O_WRONLY) != 0;
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
-	inode->i_fop = &ouichefs_file_ops; // 1.6 change fixing ioctl bug
+	inode->i_fop = &ouichefs_file_ops;
 
 	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
 		struct super_block *sb = inode->i_sb;
@@ -326,6 +326,8 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
     size_t count = iov_iter_count(from);                      // Number of bytes to write from userspace
     //size_t copied = 0;                                        // Total bytes written so far
 
+    printk(KERN_INFO "[DEBUG] ci->index_block before write = 0x%x\n", ci->index_block);
+
     // === 1.5 NEW CODE START: handle files <= 128 bytes with sliced blocks ===
     if (count > 128) {
         return -EFBIG; // Temporarily reject large files
@@ -365,22 +367,21 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
                     // Found a free slice
                     slice_no = i;
                     block_no = curr;
-                    uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
-		    bitmap &= ~(1 << i);
-		    meta->slice_bitmap = cpu_to_le32(bitmap); // mark slice used
-                    found = 1;
+                    meta->slice_bitmap = cpu_to_le32(le32_to_cpu(meta->slice_bitmap) & ~(1 << i));
 
                     mark_buffer_dirty(bh);
                     sync_dirty_buffer(bh);
                     brelse(bh);
+		    found = 1;
                     break;
                 }
             }
 
             if (found) break;
 
-            curr = le32_to_cpu(meta->next_partial_block);
+            uint32_t next = le32_to_cpu(meta->next_partial_block);
             brelse(bh);
+	    curr = next;
         }
 
         // (2) If none found, allocate a new sliced block
@@ -397,16 +398,13 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
                 return -EIO;
             }
 
+	    memset(bh->b_data, 0, 128);
+
             struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
-            memset(meta, 0, sizeof(*meta));
-
-            slice_no = 1; // First usable slice
-	    //set all free
 	    meta->slice_bitmap = cpu_to_le32(~0u);
+	    meta->slice_bitmap &= cpu_to_le32(~((1 << 0) | (1 << 1)));
+            slice_no = 1;	// First usable slice
 
-	    //reserve slice 0 and slice 1
-	    meta->slice_bitmap &= cpu_to_le32(~(1 << 0)); // slice 0 reserved
-            meta->slice_bitmap = cpu_to_le32(~(1 << 1)); // mark slice 1 as used
             meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
             sbi->s_free_sliced_blocks = block_no;
 
@@ -417,13 +415,19 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 
         // Store into inode: high 5 bits = slice_no, low 27 bits = block_no
         ci->index_block = (slice_no << 27) | block_no;
+
+	printk(KERN_INFO "[DEBUG] new slice assigned: slice=%u, block=%u, index_block=0x%x\n",
+		slice_no, block_no, ci->index_block);
+
 	inode->i_blocks = 1;
 	inode->i_size = count;
 	mark_inode_dirty(inode);
-
     } else {
         block_no = ci->index_block & ((1 << 27) - 1);
         slice_no = ci->index_block >> 27;
+
+	printk(KERN_INFO "[DEBUG] reuse old index_block: slice=%u, block=%u, index_block=0x%x\n",
+		slice_no, block_no, ci->index_block);
     }
 
     // Write data to the assigned slice
@@ -443,6 +447,9 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
     iocb->ki_pos += count;
     inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
     mark_inode_dirty(inode);
+
+    printk(KERN_INFO "[OuicheFS] Write: block=%u slice=%u (index_block=0x%x)\n",
+	block_no, slice_no, ci->index_block);
 
     kfree(kbuf);
     return count;
@@ -494,7 +501,6 @@ long ouichefs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     struct super_block *sb = inode->i_sb;
     struct buffer_head *bh;
     uint32_t block_no;
-    int i;
 
     if (cmd != OUICHEFS_IOCTL_DUMP_BLOCK)
         return -ENOTTY;
@@ -510,6 +516,7 @@ long ouichefs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
     printk(KERN_INFO "---- [OuicheFS] Dumping Block %u ----\n", block_no);
 
+    int i;
     for (i = 0; i < 32; i++) {
         char line[129];  // 每行 128 字节 + 终止符
         memcpy(line, bh->b_data + i * 128, 128);
