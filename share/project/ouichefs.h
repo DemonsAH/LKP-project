@@ -42,6 +42,9 @@
  *
  */
 
+// LKP import from inode.c
+void release_slice(struct inode *inode);
+
 // Number of bits used to store the slice number (we have at most 32 slices)
 #define SLICE_BITS      5
 

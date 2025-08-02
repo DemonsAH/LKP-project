@@ -293,48 +293,73 @@ end:
 	return ret;
 }
 
-// task 1.7 Frees a slice used by a small file, and updates block state
-static void release_slice(struct inode *inode)
+/**
+	task 1.7 Frees a slice used by a small file, and updates block state
+	task 1.10 updated for multi slice
+**/
+void release_slice(struct inode *inode)
 {
     struct super_block *sb = inode->i_sb;
     struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
     struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 
-    // Decode block number and slice number
     uint32_t raw = ci->index_block;
-    uint32_t block_no = raw & ((1 << 27) - 1);
     uint32_t slice_no = raw >> 27;
+    uint32_t block_no = raw & ((1 << 27) - 1);
+    uint32_t num_slices = DIV_ROUND_UP(inode->i_size, 128);
 
-    // Read the sliced block
     struct buffer_head *bh = sb_bread(sb, block_no);
     if (!bh)
         return;
 
     struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
-
-    // Mark the slice as free in bitmap
     uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
-    bitmap |= (1 << slice_no);
+
+    // Free all slices used
+    bitmap |= ((1 << num_slices) - 1) << slice_no;
+
     meta->slice_bitmap = cpu_to_le32(bitmap);
 
-    // If all 31 slices are now free, release the whole block
-    if (bitmap == 0xFFFFFFFE) {
+    // Check if block became fully free
+    if (bitmap == 0xFFFFFFFF) {
+        // Remove from partial list if necessary
+        uint32_t curr = sbi->s_free_sliced_blocks;
+        uint32_t prev = 0;
+
+        while (curr) {
+            struct buffer_head *bh_curr = sb_bread(sb, curr);
+            if (!bh_curr) break;
+
+            struct ouichefs_sliced_block_meta *meta_curr = (void *)bh_curr->b_data;
+            if (curr == block_no) {
+                if (prev)
+                    ((struct ouichefs_sliced_block_meta *)sb_bread(sb, prev)->b_data)->next_partial_block = meta_curr->next_partial_block;
+                else
+                    sbi->s_free_sliced_blocks = le32_to_cpu(meta_curr->next_partial_block);
+                brelse(bh_curr);
+                break;
+            }
+
+            prev = curr;
+            curr = le32_to_cpu(meta_curr->next_partial_block);
+            brelse(bh_curr);
+        }
+
         put_block(sbi, block_no);
     } else {
-        // Add to partially-filled list if not already linked
-        uint32_t next = le32_to_cpu(meta->next_partial_block);
-        if (next == 0) {
-            meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
-            sbi->s_free_sliced_blocks = block_no;
-        }
+        // Add back to partial list if not already
+        meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
+        sbi->s_free_sliced_blocks = block_no;
 
         mark_buffer_dirty(bh);
         sync_dirty_buffer(bh);
     }
 
     brelse(bh);
-    printk(KERN_INFO "Released slice %u of block %u\n", slice_no, block_no);
-
+    ci->index_block = 0;
+    inode->i_blocks = 0;
+    inode->i_size = 0;
+    mark_inode_dirty(inode);
 }
 
 /*
