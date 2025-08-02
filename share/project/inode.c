@@ -146,7 +146,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	struct ouichefs_inode_info *ci;
 	struct super_block *sb;
 	struct ouichefs_sb_info *sbi;
-	uint32_t ino, bno;
+	uint32_t ino;
 	int ret;
 
 	/* Check mode before doing anything to avoid undoing everything */
@@ -173,12 +173,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	ci = OUICHEFS_INODE(inode);
 
 	/* Get a free block for this new inode's index */
-	bno = get_free_block(sbi);
-	if (!bno) {
-		ret = -ENOSPC;
-		goto put_inode;
-	}
-	ci->index_block = bno;
+	ci->index_block = 0;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
@@ -197,8 +192,6 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 
 	return inode;
 
-put_inode:
-	iput(inode);
 put_ino:
 	put_inode(sbi, ino);
 
