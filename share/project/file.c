@@ -490,8 +490,10 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
             return -EIO;
         }
 
-        struct ouichefs_sliced_block_meta *meta = (void *)bh->b_data;
-        memset(meta, 0, sizeof(*meta));
+        memset(bh->b_data, 0, 128);
+        struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
+//        struct ouichefs_sliced_block_meta *meta = (void *)bh->b_data;
+//        memset(meta, 0, sizeof(*meta));
 
         uint32_t bitmap = ~0u;
         bitmap &= ~1; // slice 0 reserved
