@@ -234,314 +234,274 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 
 ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
 {
-    struct file *filp = iocb->ki_filp;
-    struct inode *inode = file_inode(filp);
-    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-    struct super_block *sb = inode->i_sb;
-    loff_t pos = iocb->ki_pos;
-    size_t count = iov_iter_count(to);
+	struct file *filp = iocb->ki_filp;
+	struct inode *inode = file_inode(filp);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	loff_t pos = iocb->ki_pos;
+	size_t count = iov_iter_count(to);
 
-    if (pos >= inode->i_size)
-        return 0;
+	if (pos >= inode->i_size)
+		return 0;
 
-    // support only small files stored in slice format
-    if (ci->index_block == 0)
-        return 0;
+	// support only small files stored in slice format
+	if (ci->index_block == 0)
+		return 0;
 
-    uint32_t block_no = ci->index_block & ((1 << 27) - 1);
-    uint32_t slice_start = ci->index_block >> 27;
+	uint32_t block_no = ci->index_block & ((1 << 27) - 1);
+	uint32_t slice_start = ci->index_block >> 27;
 
-    struct buffer_head *bh = sb_bread(sb, block_no);
-    if (!bh)
-        return -EIO;
+	struct buffer_head *bh = sb_bread(sb, block_no);
+	if (!bh)
+		return -EIO;
 
-    size_t copied = 0;
-    while (count > 0 && pos < inode->i_size) {
-        size_t slice_offset = pos % 128;
-        uint32_t slice_index = slice_start + (pos / 128);
-        void *src = bh->b_data + slice_index * 128 + slice_offset;
+	size_t copied = 0;
+	while (count > 0 && pos < inode->i_size) {
+		size_t slice_offset = pos % 128;
+		uint32_t slice_index = slice_start + (pos / 128);
+		void *src = bh->b_data + slice_index * 128 + slice_offset;
 
-        size_t remain = inode->i_size - pos;
-        size_t in_slice = 128 - slice_offset;
-        size_t to_copy = min3(count, remain, in_slice);
+		size_t remain = inode->i_size - pos;
+		size_t in_slice = 128 - slice_offset;
+		size_t to_copy = min3(count, remain, in_slice);
 
-        if (copy_to_iter(src, to_copy, to) != to_copy) {
-            brelse(bh);
-            return -EFAULT;
-        }
+		if (copy_to_iter(src, to_copy, to) != to_copy) {
+			brelse(bh);
+			return -EFAULT;
+		}
 
-        pos += to_copy;
-        copied += to_copy;
-        count -= to_copy;
-    }
+		pos += to_copy;
+		copied += to_copy;
+		count -= to_copy;
+	}
 
-    iocb->ki_pos = pos;
-    brelse(bh);
-    return copied;
+	iocb->ki_pos = pos;
+	brelse(bh);
+	return copied;
 }
-
-//ssize_t ouichefs_read(struct kiocb *iocb, struct iov_iter *to)
-//{
-
-//    struct file *filp = iocb->ki_filp;                        // Retrieve the file pointer
-//    struct inode *inode = file_inode(filp);                   // Get the inode
-//    struct super_block *sb = inode->i_sb;                     // Get the superblock
-//    loff_t pos = iocb->ki_pos;                                // Current file offset
-//    size_t count = iov_iter_count(to);                        // Number of bytes requested by userspace
-//    size_t copied = 0;                                        // Total number of bytes copied so far
-//
-//    if (pos >= inode->i_size)                                 // If requested offset is beyond EOF
-//        return 0;                                             // Signal EOF to the application
-//
-//    while (count > 0 && pos < inode->i_size) {                // Continue while data remains and not at EOF
-//        unsigned int block_size = 4096;                       // Assume block size is 4096 bytes
-//        unsigned int block_index = pos / block_size;         // Compute logical block index
-//        unsigned int offset = pos % block_size;              // Offset within the current block
-//        size_t bytes_left_in_block = block_size - offset;    // Bytes remaining in the current block
-//        size_t bytes_left_in_file = inode->i_size - pos;     // Bytes left until EOF
-//        size_t to_copy = min3(count, bytes_left_in_block, bytes_left_in_file);  // How much to copy this iteration
-//
-//        sector_t disk_block = inode->i_blocks + block_index; // Simplified: start from inode->i_blocks
-//        struct buffer_head *bh = sb_bread(sb, disk_block);   // Read the block from disk
-//        if (!bh)
-//            return copied ? copied : -EIO;                   // On failure, return partial result or error
-//
-//        if (copy_to_iter(bh->b_data + offset, to_copy, to) != to_copy) {
-//            brelse(bh);                                      // If copying to userspace fails, release buffer
-//            return copied ? copied : -EFAULT;
-//        }
-//
-//        brelse(bh);                                          // Done with buffer, release it
-//        pos += to_copy;                                      // Advance file position
-//        copied += to_copy;                                   // Track bytes read
-//        count -= to_copy;                                    // Reduce remaining bytes to read
-//    }
-//
-//    iocb->ki_pos = pos;                                      // Update file offset for caller
-//    return copied;                                           // Return total bytes copied
-//}
 
 // 1.8 NEW CODE(1.10 updated for multi slice)
 int convert_slice_to_block(struct inode *inode)
 {
-    struct super_block *sb = inode->i_sb;
-    struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 
-    uint32_t raw = ci->index_block;
-    uint32_t slice_no = raw >> 27;
-    uint32_t slice_block = raw & ((1 << 27) - 1);
-    size_t size = inode->i_size;
+	uint32_t raw = ci->index_block;
+	uint32_t slice_no = raw >> 27;
+	uint32_t slice_block = raw & ((1 << 27) - 1);
+	size_t size = inode->i_size;
 
-    struct buffer_head *bh_slice = sb_bread(sb, slice_block);
-    if (!bh_slice)
-        return -EIO;
+	struct buffer_head *bh_slice = sb_bread(sb, slice_block);
+	if (!bh_slice)
+		return -EIO;
 
-    // Copy full file content from slices
-    char *buffer = kmalloc(size, GFP_KERNEL);
-    if (!buffer) {
-        brelse(bh_slice);
-        return -ENOMEM;
-    }
+	// Copy full file content from slices
+	char *buffer = kmalloc(size, GFP_KERNEL);
+	if (!buffer) {
+		brelse(bh_slice);
+		return -ENOMEM;
+	}
 
-    size_t copied = 0;
-    while (copied < size) {
-        size_t slice_index = slice_no + (copied / 128);
-        size_t offset = copied % 128;
-        size_t to_copy = min_t(size_t, 128 - offset, size - copied);
-        void *src = bh_slice->b_data + slice_index * 128 + offset;
-        memcpy(buffer + copied, src, to_copy);
-        copied += to_copy;
-    }
+	size_t copied = 0;
+	while (copied < size) {
+		size_t slice_index = slice_no + (copied / 128);
+		size_t offset = copied % 128;
+		size_t to_copy = min_t(size_t, 128 - offset, size - copied);
+		void *src = bh_slice->b_data + slice_index * 128 + offset;
+		memcpy(buffer + copied, src, to_copy);
+		copied += to_copy;
+	}
 
-    brelse(bh_slice);
-    release_slice(inode); // clear old slice allocation
+	brelse(bh_slice);
+	release_slice(inode); // clear old slice allocation
 
-    // Allocate new index + data block
-    uint32_t index_block = ouichefs_alloc_block(sb);
-    if (!index_block) {
-        kfree(buffer);
-        return -ENOSPC;
-    }
+	// Allocate new index + data block
+	uint32_t index_block = ouichefs_alloc_block(sb);
+	if (!index_block) {
+		kfree(buffer);
+		return -ENOSPC;
+	}
 
-    struct buffer_head *bh_index = sb_getblk(sb, index_block);
-    if (!bh_index) {
-        kfree(buffer);
-        return -EIO;
-    }
+	struct buffer_head *bh_index = sb_getblk(sb, index_block);
+	if (!bh_index) {
+		kfree(buffer);
+		return -EIO;
+	}
 
-    struct ouichefs_file_index_block *index = (void *)bh_index->b_data;
-    memset(index, 0, sizeof(*index));
+	struct ouichefs_file_index_block *index = (void *)bh_index->b_data;
+	memset(index, 0, sizeof(*index));
 
-    uint32_t data_block = ouichefs_alloc_block(sb);
-    if (!data_block) {
-        put_block(sbi, index_block);
-        brelse(bh_index);
-        kfree(buffer);
-        return -ENOSPC;
-    }
+	uint32_t data_block = ouichefs_alloc_block(sb);
+	if (!data_block) {
+		put_block(sbi, index_block);
+		brelse(bh_index);
+		kfree(buffer);
+		return -ENOSPC;
+	}
 
-    index->blocks[0] = cpu_to_le32(data_block);
-    mark_buffer_dirty(bh_index);
-    sync_dirty_buffer(bh_index);
-    brelse(bh_index);
+	index->blocks[0] = cpu_to_le32(data_block);
+	mark_buffer_dirty(bh_index);
+	sync_dirty_buffer(bh_index);
+	brelse(bh_index);
 
-    struct buffer_head *bh_data = sb_getblk(sb, data_block);
-    if (!bh_data) {
-        kfree(buffer);
-        return -EIO;
-    }
+	struct buffer_head *bh_data = sb_getblk(sb, data_block);
+	if (!bh_data) {
+		kfree(buffer);
+		return -EIO;
+	}
 
-    memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
-    memcpy(bh_data->b_data, buffer, size);
-    mark_buffer_dirty(bh_data);
-    sync_dirty_buffer(bh_data);
-    brelse(bh_data);
+	memset(bh_data->b_data, 0, OUICHEFS_BLOCK_SIZE);
+	memcpy(bh_data->b_data, buffer, size);
+	mark_buffer_dirty(bh_data);
+	sync_dirty_buffer(bh_data);
+	brelse(bh_data);
 
-    // Update inode
-    ci->index_block = index_block;
-    inode->i_blocks = 2;
-    mark_inode_dirty(inode);
+	// Update inode
+	ci->index_block = index_block;
+	inode->i_blocks = 2;
+	mark_inode_dirty(inode);
 
-    kfree(buffer);
-    return 0;
+	kfree(buffer);
+	return 0;
 }
 
 ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 {
-    struct file *filp = iocb->ki_filp;
-    struct inode *inode = file_inode(filp);
-    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-    struct super_block *sb = inode->i_sb;
-    size_t count = iov_iter_count(from);
+	struct file *filp = iocb->ki_filp;
+	struct inode *inode = file_inode(filp);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	size_t count = iov_iter_count(from);
 
-    // === 1.8 legacy fallback ===
-    if (count > 4096)
-        return -EFBIG;
+	// === 1.8 legacy fallback ===
+	if (count > 4096)
+		return -EFBIG;
 
-    // if file was a slice and now enlarged → convert to traditional block
-    if (count > 128 && inode->i_size <= 128 && ci->index_block != 0) {
-        int ret = convert_slice_to_block(inode);
-        if (ret < 0)
-            return ret;
-        // fall through to legacy writer (not shown here)
-    }
+	// if file was a slice and now enlarged → convert to traditional block
+	if (count > 128 && inode->i_size <= 128 && ci->index_block != 0) {
+		int ret = convert_slice_to_block(inode);
+		if (ret < 0)
+			return ret;
+		// fall through to legacy writer (not shown here)
+	}
 
-    // === Allocate temporary buffer ===
-    void *kbuf = kmalloc(count, GFP_KERNEL);
-    if (!kbuf)
-        return -ENOMEM;
-    if (copy_from_iter(kbuf, count, from) != count) {
-        kfree(kbuf);
-        return -EFAULT;
-    }
+	// === Allocate temporary buffer ===
+	void *kbuf = kmalloc(count, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+	if (copy_from_iter(kbuf, count, from) != count) {
+		kfree(kbuf);
+		return -EFAULT;
+	}
 
-    // === 1.10: Multi-slice write (count <= 4096) ===
-    size_t num_slices = DIV_ROUND_UP(count, 128);
-    if (num_slices > 31) {
-        kfree(kbuf);
-        return -EFBIG;
-    }
+	// === 1.10: Multi-slice write (count <= 4096) ===
+	size_t num_slices = DIV_ROUND_UP(count, 128);
+	if (num_slices > 31) {
+		kfree(kbuf);
+		return -EFBIG;
+	}
 
-    uint32_t block_no = 0, slice_start = 0;
-    struct buffer_head *bh;
-    struct ouichefs_sb_info *sbi = sb->s_fs_info;
-    int found = 0;
+	uint32_t block_no = 0, slice_start = 0;
+	struct buffer_head *bh;
+	struct ouichefs_sb_info *sbi = sb->s_fs_info;
+	int found = 0;
 
-    // search partially filled blocks
-    uint32_t curr = sbi->s_free_sliced_blocks;
-    while (curr) {
-        bh = sb_bread(sb, curr);
-        if (!bh) break;
-        struct ouichefs_sliced_block_meta *meta = (void *)bh->b_data;
-        uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
+	// search partially filled blocks
+	uint32_t curr = sbi->s_free_sliced_blocks;
+	while (curr) {
+		bh = sb_bread(sb, curr);
+		if (!bh) break;
+		struct ouichefs_sliced_block_meta *meta = (void *)bh->b_data;
+		uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
 
-        for (int i = 1; i <= 32 - num_slices; i++) {
-            if ((bitmap & (((1 << num_slices) - 1) << i)) == (((1 << num_slices) - 1) << i)) {
-                // enough free slices
-                block_no = curr;
-                slice_start = i;
-                bitmap &= ~(((1 << num_slices) - 1) << i);
-                meta->slice_bitmap = cpu_to_le32(bitmap);
+		for (int i = 1; i <= 32 - num_slices; i++) {
+			if ((bitmap & (((1 << num_slices) - 1) << i)) == (((1 << num_slices) - 1) << i)) {
+				// enough free slices
+				block_no = curr;
+				slice_start = i;
+				bitmap &= ~(((1 << num_slices) - 1) << i);
+				meta->slice_bitmap = cpu_to_le32(bitmap);
 
-                mark_buffer_dirty(bh);
-                sync_dirty_buffer(bh);
-                brelse(bh);
-                found = 1;
-                goto slice_allocated;
-            }
-        }
+				mark_buffer_dirty(bh);
+				sync_dirty_buffer(bh);
+				brelse(bh);
+				found = 1;
+				goto slice_allocated;
+			}
+		}
 
-        curr = le32_to_cpu(meta->next_partial_block);
-        brelse(bh);
-    }
+		uint32_t next = le32_to_cpu(meta->next_partial_block);
+		brelse(bh);
+		curr = next;
+	}
 
-    // allocate new sliced block
-    if (!found) {
-        block_no = ouichefs_alloc_block(sb);
-        if (!block_no) {
-            kfree(kbuf);
-            return -ENOSPC;
-        }
+	// allocate new sliced block
+	if (!found) {
+		block_no = ouichefs_alloc_block(sb);
+		if (!block_no) {
+			kfree(kbuf);
+			return -ENOSPC;
+		}
 
-        bh = sb_bread(sb, block_no);
-        if (!bh) {
-            kfree(kbuf);
-            return -EIO;
-        }
+		bh = sb_bread(sb, block_no);
+		if (!bh) {
+			kfree(kbuf);
+			return -EIO;
+		}
 
-        memset(bh->b_data, 0, 128);
-        struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
-//        struct ouichefs_sliced_block_meta *meta = (void *)bh->b_data;
-//        memset(meta, 0, sizeof(*meta));
+		memset(bh->b_data, 0, 128);
+		struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
 
-        uint32_t bitmap = ~0u;
-        bitmap &= ~1; // slice 0 reserved
-        bitmap &= ~(((1 << num_slices) - 1) << 1);
-        meta->slice_bitmap = cpu_to_le32(bitmap);
-        meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
-        sbi->s_free_sliced_blocks = block_no;
+		uint32_t bitmap = ~0u;
+		bitmap &= ~1; // slice 0 reserved
+		bitmap &= ~(((1 << num_slices) - 1) << 1);
+		meta->slice_bitmap = cpu_to_le32(bitmap);
+		meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
+		sbi->s_free_sliced_blocks = block_no;
 
-        mark_buffer_dirty(bh);
-        sync_dirty_buffer(bh);
-        brelse(bh);
+		mark_buffer_dirty(bh);
+		sync_dirty_buffer(bh);
+		brelse(bh);
 
-        slice_start = 1;
-    }
+		slice_start = 1;
+	}
 
 slice_allocated:
-    // update inode
-    ci->index_block = (slice_start << 27) | block_no;
-    inode->i_blocks = 1;
-    inode->i_size = count;
-    mark_inode_dirty(inode);
+	// update inode
+	ci->index_block = (slice_start << 27) | block_no;
+	inode->i_blocks = 1;
+	inode->i_size = count;
+	mark_inode_dirty(inode);
 
-    // write to slices
-    bh = sb_bread(sb, block_no);
-    if (!bh) {
-        kfree(kbuf);
-        return -EIO;
-    }
+	// write to slices
+	bh = sb_bread(sb, block_no);
+	if (!bh) {
+		kfree(kbuf);
+		return -EIO;
+	}
 
-    size_t written = 0;
-    for (int s = 0; s < num_slices; s++) {
-        size_t to_copy = min_t(size_t, 128, count - written);
-        void *dst = bh->b_data + ((slice_start + s) * 128);
-        memset(dst, 0, 128);
-        memcpy(dst, kbuf + written, to_copy);
-        written += to_copy;
-    }
+	size_t written = 0;
+	for (int s = 0; s < num_slices; s++) {
+		size_t to_copy = min_t(size_t, 128, count - written);
+		void *dst = bh->b_data + ((slice_start + s) * 128);
+		memset(dst, 0, 128);
+		memcpy(dst, kbuf + written, to_copy);
+		written += to_copy;
+	}
 
-    mark_buffer_dirty(bh);
-    sync_dirty_buffer(bh);
-    brelse(bh);
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
 
-    iocb->ki_pos += count;
-    inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
-    mark_inode_dirty(inode);
+	iocb->ki_pos += count;
+	inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
+	mark_inode_dirty(inode);
 
-    kfree(kbuf);
-    return count;
+	printk(KERN_INFO "[OuicheFS]Write: block=%u slice=%u (index_block=0x%x)\n", block_no, slice_start, ci->index_block);
+
+	kfree(kbuf);
+	return count;
 }
 
 //Implementation for task 1.6
@@ -549,38 +509,39 @@ slice_allocated:
 
 long ouichefs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    struct inode *inode = file_inode(file);
-    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-    struct super_block *sb = inode->i_sb;
-    struct buffer_head *bh;
-    uint32_t block_no;
-    int i;
+	struct inode *inode = file_inode(file);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	struct buffer_head *bh;
+	uint32_t block_no;
+	int i;
 
-    if (cmd != OUICHEFS_IOCTL_DUMP_BLOCK)
-        return -ENOTTY;
+	if (cmd != OUICHEFS_IOCTL_DUMP_BLOCK)
+		return -ENOTTY;
 
-    // 仅支持 slice-based 文件
-    if (ci->index_block == 0)
-        return -EINVAL;
+	// only support slice-based files
+	if (ci->index_block == 0)
+		return -EINVAL;
 
-    block_no = ci->index_block & ((1 << 27) - 1);
-    bh = sb_bread(sb, block_no);
-    if (!bh)
-        return -EIO;
+	block_no = ci->index_block & ((1 << 27) - 1);
+	bh = sb_bread(sb, block_no);
+	if (!bh)
+		return -EIO;
 
-    printk(KERN_INFO "---- [OuicheFS] Dumping Block %u ----\n", block_no);
+	printk(KERN_INFO "---- [OuicheFS] Dumping Block %u ----\n", block_no);
 
-    for (i = 0; i < 32; i++) {
-        char line[129];  // 每行 128 字节 + 终止符
-        memcpy(line, bh->b_data + i * 128, 128);
-        line[128] = '\0';
+	uint32_t slice_start = ci->index_block >> 27;
+	uint32_t num_slices = DIV_ROUND_UP(inode->i_size, 128);
 
-        // 注意：如有非 ASCII 数据，可用 hex 方式打印
-        printk(KERN_INFO "Slice %02d: %.128s\n", i, line);
-    }
+	for (i = 0; i < num_slices; i++) {
+		char line[129];
+		memcpy(line, bh->b_data + (slice_start + i) * 128, 128);
+		line[128] = '\0';
+		printk(KERN_INFO "Slice %02d: %.128s\n", slice_start + i, line);
+	}
 
-    brelse(bh);
-    return 0;
+	brelse(bh);
+	return 0;
 }
 
 const struct file_operations ouichefs_file_ops = {
