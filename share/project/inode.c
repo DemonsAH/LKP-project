@@ -287,72 +287,71 @@ end:
 }
 
 /**
-	task 1.7 Frees a slice used by a small file, and updates block state
-	task 1.10 updated for multi slice
+ *	task 1.7 Frees a slice used by a small file, and updates block state
+ *	task 1.10 updated for multi slice
 **/
 void release_slice(struct inode *inode)
 {
-    struct super_block *sb = inode->i_sb;
-    struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-    struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct super_block *sb = inode->i_sb;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 
-    uint32_t raw = ci->index_block;
-    uint32_t slice_no = raw >> 27;
-    uint32_t block_no = raw & ((1 << 27) - 1);
-    uint32_t num_slices = DIV_ROUND_UP(inode->i_size, 128);
+	uint32_t raw = ci->index_block;
+	uint32_t slice_no = raw >> 27;
+	uint32_t block_no = raw & ((1 << 27) - 1);
+	uint32_t num_slices = DIV_ROUND_UP(inode->i_size, 128);
 
-    struct buffer_head *bh = sb_bread(sb, block_no);
-    if (!bh)
-        return;
+	struct buffer_head *bh = sb_bread(sb, block_no);
+	if (!bh)
+		return;
 
-    struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
-    uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
+	struct ouichefs_sliced_block_meta *meta = (struct ouichefs_sliced_block_meta *)bh->b_data;
+	uint32_t bitmap = le32_to_cpu(meta->slice_bitmap);
 
-    // Free all slices used
-    bitmap |= ((1 << num_slices) - 1) << slice_no;
+	// Free all slices used
+	bitmap |= ((1 << num_slices) - 1) << slice_no;
+	meta->slice_bitmap = cpu_to_le32(bitmap);
 
-    meta->slice_bitmap = cpu_to_le32(bitmap);
+	// Check if block became fully free
+	if (bitmap == 0xFFFFFFFF) {
+		// Remove from partial list if necessary
+		uint32_t curr = sbi->s_free_sliced_blocks;
+		uint32_t prev = 0;
 
-    // Check if block became fully free
-    if (bitmap == 0xFFFFFFFF) {
-        // Remove from partial list if necessary
-        uint32_t curr = sbi->s_free_sliced_blocks;
-        uint32_t prev = 0;
+		while (curr) {
+			struct buffer_head *bh_curr = sb_bread(sb, curr);
+			if (!bh_curr) break;
 
-        while (curr) {
-            struct buffer_head *bh_curr = sb_bread(sb, curr);
-            if (!bh_curr) break;
+			struct ouichefs_sliced_block_meta *meta_curr = (void *)bh_curr->b_data;
+			if (curr == block_no) {
+				if (prev)
+					((struct ouichefs_sliced_block_meta *)sb_bread(sb, prev)->b_data)->next_partial_block = meta_curr->next_partial_block;
+				else
+					sbi->s_free_sliced_blocks = le32_to_cpu(meta_curr->next_partial_block);
+				brelse(bh_curr);
+				break;
+			}
 
-            struct ouichefs_sliced_block_meta *meta_curr = (void *)bh_curr->b_data;
-            if (curr == block_no) {
-                if (prev)
-                    ((struct ouichefs_sliced_block_meta *)sb_bread(sb, prev)->b_data)->next_partial_block = meta_curr->next_partial_block;
-                else
-                    sbi->s_free_sliced_blocks = le32_to_cpu(meta_curr->next_partial_block);
-                brelse(bh_curr);
-                break;
-            }
+			prev = curr;
+			curr = le32_to_cpu(meta_curr->next_partial_block);
+			brelse(bh_curr);
+		}
 
-            prev = curr;
-            curr = le32_to_cpu(meta_curr->next_partial_block);
-            brelse(bh_curr);
-        }
+		put_block(sbi, block_no);
+	} else {
+		// Add back to partial list if not already
+		meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
+		sbi->s_free_sliced_blocks = block_no;
 
-        put_block(sbi, block_no);
-    } else {
-        // Add back to partial list if not already
-        meta->next_partial_block = cpu_to_le32(sbi->s_free_sliced_blocks);
-        sbi->s_free_sliced_blocks = block_no;
+		mark_buffer_dirty(bh);
+		sync_dirty_buffer(bh);
+	}
 
-        mark_buffer_dirty(bh);
-        sync_dirty_buffer(bh);
-    }
-
-    brelse(bh);
-    ci->index_block = 0;
-    inode->i_blocks = 0;
-    inode->i_size = 0;
-    mark_inode_dirty(inode);
+	brelse(bh);
+	ci->index_block = 0;
+	inode->i_blocks = 0;
+	inode->i_size = 0;
+	mark_inode_dirty(inode);
 }
 
 /*
@@ -400,10 +399,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	brelse(bh);
 
 	// task 1.7 detect small file
-    if (inode->i_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
-        release_slice(inode);
-        goto clean_inode;
-    }
+	if (inode->i_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
+		release_slice(inode);
+		goto clean_inode;
+	}
 
 	/* Update inode stats */
 	dir->i_mtime = dir->i_ctime = current_time(dir);
@@ -429,7 +428,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		if (!file_block->blocks[i])
 			continue;
 
-    bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
+		bh2 = sb_bread(sb, le32_to_cpu(file_block->blocks[i]));
 		if (!bh2)
 			goto put_block;
 		block = (char *)bh2->b_data;
@@ -455,10 +454,8 @@ clean_inode:
 	i_uid_write(inode, 0);
 	i_gid_write(inode, 0);
 	inode->i_mode = 0;
-	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
-		0;
-	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec =
-		inode->i_atime.tv_nsec = 0;
+	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec = inode->i_atime.tv_sec = 0;
+	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = 0;
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
 
@@ -466,7 +463,7 @@ clean_inode:
 	put_block(sbi, bno);
 	put_inode(sbi, ino);
 	clear_nlink(inode);
-    mark_inode_dirty(inode);
+	mark_inode_dirty(inode);
 
 	return 0;
 }
