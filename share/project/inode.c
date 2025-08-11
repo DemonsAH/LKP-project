@@ -384,8 +384,6 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	uint32_t ino, bno;
 	int i, f_id = -1, nr_subs = 0;
 
-	// 在这里添加统计信息声明和保存
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	loff_t old_size = inode->i_size;
 
 	ino = inode->i_ino;
@@ -475,10 +473,10 @@ scrub:
 
 clean_inode:
 	/* update super block state */
-	if (S_ISREG(inode->i_mode)) {
-		struct ouichefs_sb_info *sbi = OUICHEFS_SB(dir->i_sb);
-		sbi->files--;
-	}
+//	if (S_ISREG(inode->i_mode)) {
+//		struct ouichefs_sb_info *sbi = OUICHEFS_SB(dir->i_sb);
+//		sbi->files--;
+//	}
 	/* Cleanup inode and mark dirty */
 	inode->i_blocks = 0;
 	OUICHEFS_INODE(inode)->index_block = 0;

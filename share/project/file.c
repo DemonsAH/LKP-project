@@ -377,6 +377,9 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct super_block *sb = inode->i_sb;
 	size_t count = iov_iter_count(from);
+	/* update super block info */
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	loff_t old_size = inode->i_size;
 
 	// === 1.8 legacy fallback ===
 	if (count > OUICHEFS_MAX_FILESIZE)
@@ -504,10 +507,6 @@ slice_allocated:
 	sync_dirty_buffer(bh);
 	brelse(bh);
 
-	/* update super block info */
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	loff_t old_size = inode->i_size;
-
 	/* detect new small file and update small_files count */
 	if (old_size == 0 && count <= 128) {
 		sbi->small_files++;
@@ -531,10 +530,6 @@ slice_allocated:
 	if (old_size <= 128 && count > 128) {
 		sbi->small_files--;
 	}
-
-	iocb->ki_pos += count;
-	inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
-	mark_inode_dirty(inode);
 
 	iocb->ki_pos += count;
 	inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
