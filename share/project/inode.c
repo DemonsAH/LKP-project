@@ -175,6 +175,8 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	/* Get a free block for this new inode's index */
 	ci->index_block = 0;
 
+	inode->i_blocks = 1;
+
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
 	inode->i_blocks = 1;

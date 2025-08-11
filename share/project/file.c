@@ -12,6 +12,8 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/mpage.h>
+#include <linux/printk.h>
+
 
 #include "ouichefs.h"
 #include "bitmap.h"
@@ -292,13 +294,19 @@ int convert_slice_to_block(struct inode *inode)
 	uint32_t slice_block = raw & ((1 << 27) - 1);
 	size_t size = inode->i_size;
 
-	struct buffer_head *bh_slice = sb_bread(sb, slice_block);
-	if (!bh_slice)
-		return -EIO;
+    printk(KERN_INFO "[OuicheFS] Entering convert_slice_to_block()\n");
+    printk(KERN_INFO "[OuicheFS] old size = %lld\n", inode->i_size);
 
+
+	struct buffer_head *bh_slice = sb_bread(sb, slice_block);
+	if (!bh_slice) {
+		printk(KERN_INFO "[OuicheFS] sb_bread failed for slice block %u\n", slice_block);
+		return -EIO;
+	}
 	// Copy full file content from slices
 	char *buffer = kmalloc(size, GFP_KERNEL);
 	if (!buffer) {
+		printk(KERN_INFO "[OuicheFS] kmalloc failed for size %zu\n", size);
 		brelse(bh_slice);
 		return -ENOMEM;
 	}
@@ -317,8 +325,7 @@ int convert_slice_to_block(struct inode *inode)
 	release_slice(inode); // clear old slice allocation
 
 	/* update super block data */
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	sbi->small_files--;
+//	sbi->small_files--;
 
 	// Allocate new index + data block
 	uint32_t index_block = ouichefs_alloc_block(sb);
@@ -381,6 +388,10 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	loff_t old_size = inode->i_size;
 
+	printk(KERN_INFO ">>>> ouichefs_write called, size = %zu\n", iov_iter_count(from));
+	printk(KERN_INFO ">>> ouichefs_write: ci->index_block = %u\n", ci->index_block);
+
+
 	// === 1.8 legacy fallback ===
 	if (count > OUICHEFS_MAX_FILESIZE)
 		return -EFBIG;
@@ -411,7 +422,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 
 	uint32_t block_no = 0, slice_start = 0;
 	struct buffer_head *bh;
-	struct ouichefs_sb_info *sbi = sb->s_fs_info;
+//	struct ouichefs_sb_info *sbi = sb->s_fs_info;
 	int found = 0;
 
 	// search partially filled blocks
@@ -478,6 +489,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 		brelse(bh);
 
 		slice_start = 1;
+		goto slice_allocated;
 	}
 
 slice_allocated:
@@ -527,7 +539,7 @@ slice_allocated:
 	sbi->total_data_size += (count - old_size);
 
 	/* check if it's small file */
-	if (old_size <= 128 && count > 128) {
+	if (old_size > 0 && old_size <= 128 && count > 128) {
 		sbi->small_files--;
 	}
 
