@@ -316,6 +316,10 @@ int convert_slice_to_block(struct inode *inode)
 	brelse(bh_slice);
 	release_slice(inode); // clear old slice allocation
 
+	/* update super block data */
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	sbi->small_files--;
+
 	// Allocate new index + data block
 	uint32_t index_block = ouichefs_alloc_block(sb);
 	if (!index_block) {
@@ -375,7 +379,7 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 	size_t count = iov_iter_count(from);
 
 	// === 1.8 legacy fallback ===
-	if (count > 4096)
+	if (count > OUICHEFS_MAX_FILESIZE)
 		return -EFBIG;
 
 	// if file was a slice and now enlarged → convert to traditional block
@@ -444,6 +448,12 @@ ssize_t ouichefs_write(struct kiocb *iocb, struct iov_iter *from)
 			return -ENOSPC;
 		}
 
+		if (unlikely(block_no == 0)) {
+			kfree(kbuf);
+			pr_err("ouichefs: allocator returned block 0! abort.\n");
+			return -EUCLEAN;
+		}
+
 		bh = sb_bread(sb, block_no);
 		if (!bh) {
 			kfree(kbuf);
@@ -493,6 +503,38 @@ slice_allocated:
 	mark_buffer_dirty(bh);
 	sync_dirty_buffer(bh);
 	brelse(bh);
+
+	/* update super block info */
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	loff_t old_size = inode->i_size;
+
+	/* detect new small file and update small_files count */
+	if (old_size == 0 && count <= 128) {
+		sbi->small_files++;
+	}
+
+	/* if the slice is new allocated */
+	if (!found) {
+		sbi->sliced_blocks++;
+		sbi->total_used_size += OUICHEFS_BLOCK_SIZE;
+		/* 32 slices for new sliced block. slice 0 kept for meta data */
+		sbi->total_free_slices += (31 - num_slices);
+	} else {
+		/* partial free sliced block used */
+		sbi->total_free_slices -= num_slices;
+	}
+
+	/* update total data size */
+	sbi->total_data_size += (count - old_size);
+
+	/* check if it's small file */
+	if (old_size <= 128 && count > 128) {
+		sbi->small_files--;
+	}
+
+	iocb->ki_pos += count;
+	inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);
+	mark_inode_dirty(inode);
 
 	iocb->ki_pos += count;
 	inode->i_size = max_t(loff_t, inode->i_size, iocb->ki_pos);

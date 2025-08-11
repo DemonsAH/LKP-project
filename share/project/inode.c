@@ -272,6 +272,12 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 		inode_inc_link_count(dir);
 	mark_inode_dirty(dir);
 
+	/* update super block state */
+	if (S_ISREG(mode)) {
+		struct ouichefs_sb_info *sbi = OUICHEFS_SB(dir->i_sb);
+		sbi->files++;
+	}
+
 	/* setup dentry */
 	d_instantiate(dentry, inode);
 
@@ -311,9 +317,15 @@ void release_slice(struct inode *inode)
 	// Free all slices used
 	bitmap |= ((1 << num_slices) - 1) << slice_no;
 	meta->slice_bitmap = cpu_to_le32(bitmap);
+	/* update super block data */
+	sbi->total_free_slices += num_slices;
 
 	// Check if block became fully free
 	if (bitmap == 0xFFFFFFFF) {
+		/* update super block data */
+		sbi->sliced_blocks--;
+		sbi->total_used_size -= OUICHEFS_BLOCK_SIZE;
+		sbi->total_free_slices -= 32;
 		// Remove from partial list if necessary
 		uint32_t curr = sbi->s_free_sliced_blocks;
 		uint32_t prev = 0;
@@ -372,6 +384,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	uint32_t ino, bno;
 	int i, f_id = -1, nr_subs = 0;
 
+	// 在这里添加统计信息声明和保存
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	loff_t old_size = inode->i_size;
+
 	ino = inode->i_ino;
 	bno = OUICHEFS_INODE(inode)->index_block;
 
@@ -398,8 +414,19 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	mark_buffer_dirty(bh);
 	brelse(bh);
 
+	/* update super block data here */
+	if (S_ISREG(inode->i_mode)) {
+		sbi->files--;
+		sbi->total_data_size -= old_size;
+		/* check including empty small file */
+		if (old_size <= 128) {
+			sbi->small_files--;
+		}
+	}
+
+
 	// task 1.7 detect small file
-	if (inode->i_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
+	if (old_size <= 128 && OUICHEFS_INODE(inode)->index_block != 0) {
 		release_slice(inode);
 		goto clean_inode;
 	}
@@ -447,6 +474,11 @@ scrub:
 	brelse(bh);
 
 clean_inode:
+	/* update super block state */
+	if (S_ISREG(inode->i_mode)) {
+		struct ouichefs_sb_info *sbi = OUICHEFS_SB(dir->i_sb);
+		sbi->files--;
+	}
 	/* Cleanup inode and mark dirty */
 	inode->i_blocks = 0;
 	OUICHEFS_INODE(inode)->index_block = 0;

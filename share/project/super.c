@@ -278,6 +278,15 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_free_blocks = le32_to_cpu(csb->nr_free_blocks);
 	sb->s_fs_info = sbi;
 
+	sbi->sliced_blocks = 0;
+	sbi->total_free_slices = 0;
+	sbi->files = 0;
+	sbi->small_files = 0;
+	sbi->total_data_size = 0;
+	sbi->total_used_size = 0;
+	sbi->s_free_sliced_blocks = 0;
+
+
 	brelse(bh);
 
 	/* Alloc and copy ifree_bitmap */
